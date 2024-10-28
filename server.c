@@ -181,6 +181,22 @@ void send_404(struct client_info *client) {
     drop_client(client);
 }
 
+void send_200(struct client_info *client) {
+    const char *body = "{status: success, data: Дані отримано}\r\n";
+    int content_length = strlen(body);
+
+    char response[1024];
+    snprintf(response, sizeof(response),
+             "HTTP/1.1 200 OK\r\n"
+             "Content-Type: application/json\r\n"
+             "Content-Length: %d\r\n"
+             "Connection: keep-alive\r\n\r\n"
+             "%s", content_length, body);
+
+    send(client->socket, response, strlen(response), 0);
+}
+
+
 void serve_resource(struct client_info *client, const char *path) {
     printf("serve_resource %s %s\n", get_client_address(client), path);
     if(strcmp(path, "/") == 0) {
@@ -220,7 +236,7 @@ void serve_resource(struct client_info *client, const char *path) {
     sprintf(buffer, "Content-Length: %u\r\n", cl);
     send(client->socket, buffer, strlen(buffer), 0);    
 
-    sprintf(buffer, "Content-Type %s\r\n", ct);
+    sprintf(buffer, "Content-Type: %s\r\n", ct);
     send(client->socket, buffer, strlen(buffer), 0);
 
     sprintf(buffer, "\r\n");
@@ -267,39 +283,83 @@ int main() {
                     continue;
                 }
 
-                int r = recv(client->socket, client->request + client->received,
-                MAX_REQUEST_SIZE - client->received, 0);
+                int response_size = recv(client->socket, client->request + client->received,
+                            MAX_REQUEST_SIZE - client->received, 0);
 
-                if(r < 1) {
-                    printf("Unexpected disconnect from %s. \n");
-                    get_client_address(client);
+                if(response_size < 1) {
+                    printf("Unexpected disconnect from %s.\n", get_client_address(client));
                     drop_client(client);
-                }
-
+                } 
+                
                 else {
-                    client->received += r;
+                    client->received += response_size;
                     client->request[client->received] = 0;
 
                     char *q = strstr(client->request, "\r\n\r\n");
                     if(q) {
                         *q = 0;
 
-                        if(strncmp("GET /", client->request, 5)) {
-                            send_400(client);
-                        }
+                        if(strncmp("GET /", client->request, 5) == 0) {
 
-                        else {
                             char *path = client->request + 4;
                             char *end_path = strstr(path, " ");
-
                             if(!end_path) {
                                 send_400(client);
-                            }
-
-                            else {
+                            } else {
                                 *end_path = 0;
                                 serve_resource(client, path);
                             }
+
+                        } 
+                        
+                       else if (strncmp("POST /", client->request, 6) == 0) {
+                            printf("%s", client->request);  // Виведення запиту для дебагу
+
+                            // Визначення Content-Length
+                            char *content_length_str = strstr(client->request, "Content-Length: ");
+                            int content_length = 0;
+                            if (content_length_str) {
+                                content_length = atoi(content_length_str + 16);
+                            } 
+                            else {
+                                printf("Content-Length not found in POST request\n");
+                                send_400(client);
+                                client = next;
+                                continue;
+                            }
+
+                            // Пошук кінця заголовків
+                            char *header_end = memchr(client->request, '\0', client->received);
+                            if (!header_end) {
+                                printf("Headers not properly terminated in POST request\n");
+                                send_400(client);
+                                client = next;
+                                continue;
+                            }
+
+                            // Довжина заголовків
+                            int headers_length = header_end - client->request + 4; // +4 для включення \r\n\r\n
+
+                            // Перевірка на повний запит
+                            if (client->received < headers_length + content_length) {
+                                printf("Incomplete POST request received\n");
+                                continue;
+                            }
+
+                            // Отримуємо тіло
+                            char *body = client->request + headers_length; // Тіло запиту починається після заголовків
+
+                            // Переконуємося, що body закінчується правильно
+                            body[content_length] = '\0'; // Завершуємо рядок нульовим символом
+
+                            printf("Received POST request with headers:\n%s\nBody:\n%s\n", client->request, body);
+
+                            // Відправка відповіді
+                            send_200(client);
+                        }
+
+                     else {
+                            send_400(client);
                         }
                     }
                 }
